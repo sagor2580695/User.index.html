@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>User Task App - Shadow Theme</title>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+        // onSnapshot যোগ করা হয়েছে Firestore থেকে রিয়েল-টাইম আপডেটের জন্য
+        import { getFirestore, collection, getDocs, doc, updateDoc, query, where, arrayUnion, setDoc, getDoc, addDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+        // Your web app's Firebase configuration
+        // !!! IMPORTANT: Replace with your actual Firebase config !!!
+        const firebaseConfig = {
+  apiKey: "AIzaSyBY4kSQ6uUQqtPN4vPGRfBsra9BZE0Oz8Y",
+  authDomain: "chating-ea3e9.firebaseapp.com",
+  databaseURL: "https://chating-ea3e9-default-rtdb.firebaseio.com",
+  projectId: "chating-ea3e9",
+  storageBucket: "chating-ea3e9.firebasestorage.app",
+  messagingSenderId: "308413104202",
+  appId: "1:308413104202:web:c1eeb9068cde245d7726b3",
+  measurementId: "G-M66YDJPN0T"
+};
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        // --- DOM Elements ---
+        const authSection = document.getElementById('auth-section');
+        const userPanel = document.getElementById('user-panel');
+        const loginForm = document.getElementById('login-form');
+        const registerForm = document.getElementById('register-form');
+        const logoutButton = document.getElementById('logout-button');
+        const currentUserSpan = document.getElementById('current-user');
+        const userCoinsSpan = document.getElementById('user-coins');
+        const tasksListUser = document.getElementById('tasks-list-user');
+
+        const userUidSpan = document.getElementById('user-uid');
+        const copyUidButton = document.getElementById('copy-uid-button');
+        const uidSection = document.getElementById('uid-section');
+
+        // --- Your WhatsApp Number ---
+        const WHATSAPP_NUMBER = '8801738351870'; // আপনার WhatsApp নম্বর কান্ট্রি কোড সহ
+
+        // --- Firebase Unsubscribe Functions ---
+        // রিয়েল-টাইম লিসেনার বন্ধ করার জন্য ভেরিয়েবল
+        let unsubscribeUserDoc = null;
+        let unsubscribeTasks = null;
+        let unsubscribeSubmissions = null;
+
+
+        // --- Firebase Authentication ---
+        onAuthStateChanged(auth, async (user) => {
+            // Unsubscribe previous listeners to prevent memory leaks or multiple listeners
+            if (unsubscribeUserDoc) unsubscribeUserDoc();
+            if (unsubscribeTasks) unsubscribeTasks();
+            if (unsubscribeSubmissions) unsubscribeSubmissions();
+
+            if (user) {
+                authSection.style.display = 'none';
+                userPanel.style.display = 'block';
+                currentUserSpan.textContent = user.email;
+
+                if (user.uid) {
+                    userUidSpan.textContent = user.uid;
+                    uidSection.style.display = 'block';
+                } else {
+                    userUidSpan.textContent = 'UID উপলব্ধ নয়';
+                    uidSection.style.display = 'block';
+                }
+
+                const userDocRef = doc(db, "users", user.uid);
+                const userDocSnap = await getDoc(userDocRef);
+                if (!userDocSnap.exists()) {
+                    await setDoc(userDocRef, {
+                        uid: user.uid,
+                        email: user.email,
+                        completedTasks: [],
+                        coins: 0
+                    });
+                }
+
+                // --- Real-time Listeners for User App ---
+                // Listen to user's own document for coin/completed task updates
+                unsubscribeUserDoc = onSnapshot(userDocRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        userCoinsSpan.textContent = docSnap.data().coins || 0;
+                        // Reload tasks to update their status based on completedTasks array
+                        loadUserTasksOnce(docSnap.data().completedTasks || [], doc.id); // Pass updated completedTasks
+                    }
+                }, (error) => {
+                    console.error("Error listening to user document: ", error);
+                });
+
+                // Listen to all tasks (will filter by user submissions within loadUserTasksOnce)
+                unsubscribeTasks = onSnapshot(collection(db, "tasks"), (snapshot) => {
+                    // This listener will trigger loadUserTasksOnce which also re-fetches submissions
+                    loadUserTasks();
+                }, (error) => {
+                    console.error("Error listening to tasks: ", error);
+                });
+                
+                // No explicit submission listener here, as loadUserTasks will fetch it
+                // and the task updates will also trigger task list refresh.
+                // However, for very specific submission status changes only, one could add:
+                // unsubscribeSubmissions = onSnapshot(query(collection(db, "submissions"), where("userId", "==", user.uid)), (snapshot) => {
+                //     loadUserTasks(); // Refresh tasks if a submission status changes
+                // });
+
+
+            } else {
+                authSection.style.display = 'block';
+                userPanel.style.display = 'none';
+                uidSection.style.display = 'none';
+            }
+        });
+
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = loginForm['login-email'].value;
+            const password = loginForm['login-password'].value;
+            try {
+                await signInWithEmailAndPassword(auth, email, password);
+                alert('লগইন সফল হয়েছে!');
+                loginForm.reset();
+            } catch (error) {
+                alert('লগইন ব্যর্থ: ' + error.message);
+            }
+        });
+
+        registerForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = registerForm['register-email'].value;
+            const password = registerForm['register-password'].value;
+            try {
+                await createUserWithEmailAndPassword(auth, email, password);
+                alert('রেজিস্ট্রেশন সফল হয়েছে! অনুগ্রহ করে লগইন করুন।');
+                registerForm.reset();
+            } catch (error) {
+                alert('রেজিস্ট্রেশন ব্যর্থ: ' + error.message);
+            }
+        });
+
+        logoutButton.addEventListener('click', async () => {
+            try {
+                await signOut(auth);
+                alert('লগআউট সফল হয়েছে!');
+            } catch (error) {
+                alert('লগআউট ব্যর্থ: ' + error.message);
+            }
+        });
+
+        // --- Copy UID to clipboard ---
+        document.addEventListener('DOMContentLoaded', () => {
+            if (copyUidButton) {
+                copyUidButton.addEventListener('click', () => {
+                    const uidText = userUidSpan.textContent;
+                    if (uidText && uidText !== 'Loading UID...' && uidText !== 'UID উপলব্ধ নয়') {
+                        navigator.clipboard.writeText(uidText).then(() => {
+                            alert('ইউজার আইডি (UID) কপি করা হয়েছে!');
+                        }).catch(err => {
+                            console.error('Failed to copy UID: ', err);
+                            alert('ইউজার আইডি কপি করা সম্ভব হয়নি। ম্যানুয়ালি কপি করুন।');
+                        });
+                    } else {
+                        alert('কপি করার জন্য কোনো ইউজার আইডি নেই।');
+                    }
+                });
+            }
+        });
+
+        // --- User Panel Functions ---
+        // This function now expects completedTasks and possibly currentUID to be passed,
+        // as it might be called from onSnapshot listeners.
+        async function loadUserTasks(currentCompletedTasks = null, currentUid = null) {
+            const user = auth.currentUser;
+            if (!user) {
+                tasksListUser.innerHTML = '<p class="error">টাস্ক দেখতে লগইন করুন।</p>';
+                return;
+            }
+
+            tasksListUser.innerHTML = '<p class="loading">টাস্ক লোড হচ্ছে...</p>';
+
+
+            try {
+                const tasksSnapshot = await getDocs(collection(db, "tasks"));
+                
+                // Get user's completed tasks if not passed (e.g., first load)
+                let completedTasks = currentCompletedTasks;
+                if (completedTasks === null) {
+                    const userDocRef = doc(db, "users", user.uid);
+                    const userDocSnap = await getDoc(userDocRef);
+                    const userData = userDocSnap.exists() ? userDocSnap.data() : { completedTasks: [], coins: 0 };
+                    completedTasks = userData.completedTasks || [];
+                }
+
+                // Get submission statuses for the current user's tasks
+                const submissionsQuery = query(collection(db, "submissions"), where("userId", "==", user.uid));
+                const submissionsSnapshot = await getDocs(submissionsQuery);
+                const userSubmissions = {};
+                submissionsSnapshot.forEach(sDoc => {
+                    userSubmissions[sDoc.data().taskId] = sDoc.data().status;
+                });
+
+                if (tasksSnapshot.empty) {
+                    tasksListUser.innerHTML = '<p class="no-tasks">কোনো টাস্ক উপলব্ধ নেই।</p>';
+                    return;
+                }
+
+                tasksListUser.innerHTML = ''; // Clear previous tasks
+                tasksSnapshot.forEach((doc) => {
+                    const task = doc.data();
+                    const taskId = doc.id;
+                    const isCompleted = completedTasks.includes(taskId); // Completed via admin acceptance
+                    const submissionStatus = userSubmissions[taskId] || 'none'; // Current submission status for this task
+
+                    const taskItem = document.createElement('div');
+                    taskItem.className = `task-item ${isCompleted ? 'completed' : ''}`;
+
+                    let statusText = '';
+                    let openLinkButtonDisabled = false; // "Open Link" button
+                    let submitButtonDisabled = false; // "Submit Proof" button
+                    let submitButtonText = 'প্রুফ সাবমিট করুন (WhatsApp)';
+
+                    if (isCompleted) {
+                        statusText = '<span class="task-status accepted">সম্পন্ন হয়েছে</span>';
+                        openLinkButtonDisabled = true;
+                        submitButtonDisabled = true;
+                        submitButtonText = 'প্রুফ সাবমিট করা হয়েছে';
+                    } else if (submissionStatus === 'pending') {
+                        statusText = '<span class="task-status pending">প্রুফ পেন্ডিং</span>';
+                        openLinkButtonDisabled = true; // Link cannot be opened again if submission is pending
+                        submitButtonDisabled = true;
+                        submitButtonText = 'প্রুফ পেন্ডিং';
+                    } else if (submissionStatus === 'rejected') {
+                        statusText = '<span class="task-status rejected">প্রুফ রিজেক্টেড</span>';
+                        // User can re-submit if rejected, so openLinkButton is not disabled by this status itself
+                        openLinkButtonDisabled = false; // Can re-open link
+                        submitButtonDisabled = false; // Allow re-submission
+                        submitButtonText = 'পুনরায় প্রুফ সাবমিট করুন (WhatsApp)';
+                    } else { // Not completed, no pending/rejected submission
+                        statusText = '<span class="task-status not-completed">অসম্পূর্ণ</span>';
+                        openLinkButtonDisabled = false;
+                        submitButtonDisabled = false;
+                        submitButtonText = 'প্রুফ সাবমিট করুন (WhatsApp)';
+                    }
+
+                    taskItem.innerHTML = `
+                        <h3>${task.title} ${statusText}</h3>
+                        <p>${task.description}</p>
+                        <button class="open-link-button" data-link="${task.directLink}" ${openLinkButtonDisabled ? 'disabled' : ''}>টাস্ক সম্পন্ন করুন (লিঙ্ক ওপেন করুন)</button>
+                        <button class="submit-proof-button" data-title="${task.title}" data-task-id="${taskId}" data-user-email="${user.email}" data-user-uid="${user.uid}" ${submitButtonDisabled ? 'disabled' : ''}>${submitButtonText}</button>
+                    `;
+                    tasksListUser.appendChild(taskItem);
+                });
+
+                tasksListUser.querySelectorAll('.open-link-button').forEach(button => {
+                    button.addEventListener('click', (e) => {
+                        const directLink = e.target.dataset.link;
+                        window.open(directLink, '_blank');
+                    });
+                });
+
+                tasksListUser.querySelectorAll('.submit-proof-button').forEach(button => {
+                    if (!button.disabled) {
+                        button.addEventListener('click', async (e) => {
+                            const taskTitle = e.target.dataset.title;
+                            const taskId = e.target.dataset.taskId;
+                            const userEmail = e.target.dataset.userEmail;
+                            const userUid = e.target.dataset.userUid;
+                            await createSubmission(taskId, taskTitle, userEmail, userUid);
+                        });
+                    }
+                });
+
+            } catch (error) {
+                tasksListUser.innerHTML = `<p class="error">টাস্ক লোড করতে সমস্যা: ${error.message}</p>`;
+                console.error("Error loading user tasks: ", error);
+            }
+        }
+
+        async function createSubmission(taskId, taskTitle, userEmail, userUid) {
+            const user = auth.currentUser;
+            if (!user) {
+                alert("প্রুফ সাবমিট করার জন্য লগইন করুন।");
+                return;
+            }
+
+            try {
+                const existingSubmissionsQuery = query(
+                    collection(db, "submissions"),
+                    where("userId", "==", user.uid),
+                    where("taskId", "==", taskId),
+                    where("status", "==", "pending")
+                );
+                const existingSubmissionsSnap = await getDocs(existingSubmissionsQuery);
+
+                if (!existingSubmissionsSnap.empty) {
+                    alert("এই টাস্কের জন্য আপনার একটি পেন্ডিং সাবমিশন ইতিমধ্যেই আছে।");
+                    return;
+                }
+
+                await addDoc(collection(db, "submissions"), {
+                    userId: user.uid,
+                    userEmail: userEmail,
+                    taskId: taskId,
+                    taskTitle: taskTitle,
+                    submittedAt: new Date(),
+                    status: "pending"
+                });
+                alert("আপনার প্রুফ সাবমিশন রেকর্ড করা হয়েছে। অ্যাডমিন পর্যালোচনার জন্য অপেক্ষা করুন।");
+                submitProofViaWhatsApp(userEmail, userUid, taskTitle); // Pass UID to WhatsApp function
+                // loadUserTasks(); // No need to manually refresh here, onSnapshot will handle it.
+
+            } catch (error) {
+                alert("প্রুফ সাবমিট করতে সমস্যা হয়েছে: " + error.message);
+                console.error("Error creating submission: ", error);
+            }
+        }
+
+        function submitProofViaWhatsApp(userEmail, userUid, taskTitle) {
+            const whatsappNumber = WHATSAPP_NUMBER;
+            const message = encodeURIComponent(`আপনার নাম (ইমেল): ${userEmail}\nইউজার আইডি (UID): ${userUid}\nটাস্কের শিরোনাম: ${taskTitle}\n\nপ্রুফ স্ক্রিনশট টি সাবমিট করুন। ধন্যবাদ!`);
+            const whatsappLink = `https://wa.me/${whatsappNumber}?text=${message}`;
+            window.open(whatsappLink, '_blank');
+        }
+
+        // --- Toggle Login/Register Forms ---
+        document.getElementById('show-register').addEventListener('click', () => {
+            document.getElementById('login-form').style.display = 'none';
+            document.querySelector('#auth-section .toggle-form p:first-of-type').style.display = 'none';
+            document.getElementById('register-form').style.display = 'flex';
+            document.querySelector('#auth-section .toggle-form p:last-of-type').style.display = 'block';
+            document.getElementById('auth-title').textContent = 'রেজিস্টার';
+        });
+
+        document.getElementById('show-login').addEventListener('click', () => {
+            document.getElementById('login-form').style.display = 'flex';
+            document.querySelector('#auth-section .toggle-form p:first-of-type').style.display = 'block';
+            document.getElementById('register-form').style.display = 'none';
+            document.querySelector('#auth-section .toggle-form p:last-of-type').style.display = 'none';
+            document.getElementById('auth-title').textContent = 'লগইন';
+        });
+
+    </script>
+    <style>
+        /* Global Styles (Red & Black Shadow Theme) */
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 0;
+            background: linear-gradient(135deg, #1a1a1a 0%, #000000 100%);
+            color: #e0e0e0;
+            line-height: 1.6;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start; /* Align items to the top for larger content */
+            padding: 20px 10px;
+            box-sizing: border-box;
+        }
+
+        .container {
+            max-width: 700px;
+            width: 100%;
+            margin: 20px auto;
+            background-color: #2c2c2c;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6), 0 0 0 2px rgba(255, 51, 51, 0.5); /* Outer red shadow */
+            box-sizing: border-box;
+        }
+
+        h1, h2, h3 {
+            color: #ff3333; /* Bright Red */
+            text-align: center;
+            margin-bottom: 25px;
+            text-shadow: 0 0 10px rgba(255, 51, 51, 0.4);
+        }
+
+        form {
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+            margin-bottom: 30px;
+            padding: 20px;
+            border: 1px solid #444;
+            border-radius: 10px;
+            background-color: #383838;
+            box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.3), 0 5px 15px rgba(0, 0, 0, 0.3);
+        }
+
+        input[type="email"],
+        input[type="password"] {
+            padding: 12px;
+            border: 1px solid #555;
+            border-radius: 6px;
+            font-size: 1rem;
+            width: calc(100% - 24px); /* Adjust for padding and border */
+            background-color: #4c4c4c;
+            color: #f0f0f0;
+            box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.3);
+            transition: border-color 0.3s ease, box-shadow 0.3s ease;
+            box-sizing: border-box;
+        }
+
+        input[type="email"]:focus,
+        input[type="password"]:focus {
+            border-color: #ff3333;
+            box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.5), 0 0 8px rgba(255, 51, 51, 0.5);
+            outline: none;
+        }
+
+        button {
+            background-color: #ff3333; /* Red button */
+            color: white;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: bold;
+            transition: background-color 0.3s ease, transform 0.2s ease, box-shadow 0.3s ease;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+        }
+
+        button:hover {
+            background-color: #cc0000; /* Darker red on hover */
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.4);
+        }
+
+        button:disabled {
+            background-color: #555;
+            cursor: not-allowed;
+            transform: translateY(0);
+            box-shadow: none;
+        }
+
+        .toggle-form {
+            text-align: center;
+            margin-top: -10px;
+            margin-bottom: 20px;
+        }
+        .toggle-form button {
+            background: none;
+            color: #ff6666; /* Lighter red for toggle button */
+            border: none;
+            padding: 5px;
+            font-size: 0.9rem;
+            cursor: pointer;
+        }
+        .toggle-form button:hover {
+            text-decoration: underline;
+        }
+
+        .header-info {
+            text-align: center;
+            margin-bottom: 25px;
+            font-size: 1.15rem;
+            color: #e0e0e0;
+            padding: 10px;
+            background-color: #3a3a3a;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+        }
+
+        .header-info button {
+            margin-left: 15px;
+            background-color: #8a2be2; /* Blue-violet for logout */
+        }
+        .header-info button:hover {
+            background-color: #6a0dad;
+        }
+
+        .coin-balance {
+            text-align: center;
+            font-size: 1.3rem;
+            margin-bottom: 25px;
+            color: #e0e0e0;
+            padding: 10px;
+            background-color: #3a3a3a;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+        }
+        .coin-balance span {
+            font-weight: bold;
+            color: #ffd700; /* Gold color for coins */
+            text-shadow: 0 0 8px rgba(255, 215, 0, 0.5);
+        }
+
+        .task-list {
+            margin-top: 20px;
+        }
+
+        .task-item {
+            background-color: #3a3a3a;
+            border: 1px solid #555;
+            padding: 20px;
+            margin-bottom: 15px;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.4);
+            position: relative;
+            overflow: hidden;
+            transition: transform 0.3s ease;
+        }
+        .task-item:hover {
+            transform: translateY(-3px);
+        }
+        .task-item::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 5px;
+            height: 100%;
+            background-color: #ff3333;
+        }
+
+        .task-item h3 {
+            margin-top: 0;
+            margin-bottom: 10px;
+            color: #ff6666;
+            text-align: left;
+            text-shadow: none;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap; /* Allow title and status to wrap */
+        }
+
+        .task-item p {
+            margin-bottom: 15px;
+            font-size: 0.95rem;
+            color: #ccc;
+            word-break: break-word; /* Prevent long text from breaking layout */
+        }
+
+        .task-item button {
+            display: block;
+            width: 100%;
+            margin-top: 10px;
+        }
+        .task-item button.open-link-button {
+            background-color: #00b300; /* Green for open link */
+            margin-top: 15px;
+        }
+        .task-item button.open-link-button:hover {
+            background-color: #008000;
+        }
+        .task-item button.submit-proof-button {
+            background-color: #25d366; /* WhatsApp green */
+            margin-top: 8px;
+        }
+        .task-item button.submit-proof-button:hover {
+            background-color: #1da851;
+        }
+
+        .task-item.completed {
+            opacity: 0.8;
+            border-left: 5px solid #00b300;
+            background-color: #334433;
+        }
+        .task-item.completed button, .task-item button:disabled {
+            background-color: #666666;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+
+        .task-status {
+            font-size: 0.8rem;
+            padding: 4px 8px;
+            border-radius: 5px;
+            margin-left: 10px;
+            font-weight: bold;
+            color: #fff;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+            flex-shrink: 0; /* Prevent status text from shrinking */
+        }
+        .task-status.not-completed { background-color: #ff3333; }
+        .task-status.pending { background-color: #ff8c00; }
+        .task-status.accepted { background-color: #00b300; }
+        .task-status.rejected { background-color: #c0392b; }
+
+        .loading, .no-tasks, .error {
+            text-align: center;
+            padding: 20px;
+            color: #999;
+            font-style: italic;
+        }
+        .error {
+            color: #ff6666;
+            font-weight: bold;
+        }
+
+        /* UID Section Specific Styles */
+        .user-uid-display {
+            background-color: #3a3a3a;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 25px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+            text-align: center;
+            word-break: break-all; /* For long UID */
+        }
+        .user-uid-display span {
+            font-family: 'Courier New', monospace;
+            font-size: 0.95rem;
+            color: #66ccff; /* Blue for UID */
+            display: block; /* Make it a block element to wrap long UID */
+            margin-bottom: 10px;
+        }
+        .user-uid-display button {
+            width: auto;
+            display: inline-block;
+            background-color: #8a2be2; /* Blue-violet for copy button */
+        }
+        .user-uid-display button:hover {
+            background-color: #6a0dad;
+        }
+        .section-divider {
+            border-top: 1px solid #444;
+            margin-top: 30px;
+            padding-top: 25px;
+        }
+
+        /* Mobile responsiveness */
+        @media (max-width: 600px) {
+            body {
+                padding: 10px;
+            }
+            .container {
+                margin: 10px auto;
+                padding: 15px;
+            }
+            input[type="email"],
+            input[type="password"] {
+                width: calc(100% - 20px);
+            }
+            button {
+                padding: 10px 15px;
+                font-size: 0.9rem;
+            }
+            .task-item button {
+                padding: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ইউজার প্যানেল</h1>
+
+        <div id="auth-section">
+            <h2 id="auth-title">লগইন</h2>
+
+            <form id="login-form">
+                <input type="email" id="login-email" placeholder="ইমেল" required>
+                <input type="password" id="login-password" placeholder="পাসওয়ার্ড" required>
+                <button type="submit">লগইন করুন</button>
+            </form>
+
+            <div class="toggle-form">
+                <p>অ্যাকাউন্ট নেই? <button type="button" id="show-register">রেজিস্টার করুন</button></p>
+            </div>
+
+            <form id="register-form" style="display: none;">
+                <input type="email" id="register-email" placeholder="ইমেল" required>
+                <input type="password" id="register-password" placeholder="পাসওয়ার্ড" required>
+                <button type="submit">রেজিস্টার করুন</button>
+            </form>
+
+            <div class="toggle-form">
+                <p>ইতিমধ্যে একটি অ্যাকাউন্ট আছে? <button type="button" id="show-login">লগইন করুন</button></p>
+            </div>
+        </div>
+
+        <div id="user-panel" style="display: none;">
+            <p class="header-info">স্বাগতম, <span id="current-user"></span>! <button id="logout-button">লগআউট</button></p>
+
+            <p class="coin-balance">আপনার কয়েন: <span id="user-coins">0</span></p>
+
+            <h2 class="section-divider">আমার ইউজার আইডি (UID)</h2>
+            <div id="uid-section" class="user-uid-display" style="display: none;"> <span id="user-uid">Loading UID...</span>
+                <button id="copy-uid-button">কপি করুন</button>
+            </div>
+
+            <h2 class="section-divider">আমার টাস্কসমূহ</h2>
+            <div id="tasks-list-user" class="task-list">
+                </div>
+        </div>
+    </div>
+</body>
+</html>
